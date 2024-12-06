@@ -16,12 +16,12 @@ STD = [0.229, 0.224, 0.225]
 BATCH_SIZE = 32
 HEIGHT = 224
 WIDTH = 224
-EPOCHS = 50
-LEARNING_RATE = 0.001
+EPOCHS = 30
+LEARNING_RATE = 0.01
 NUM_CLASSES = 7
 FACTOR = 0.5
 PATIENCE = 3
-MIN_LR = 6.25e-05
+MIN_LR = 0.001
 WEIGHT_DECAY = 0.00008
 
 "Define Dataset Class"
@@ -60,7 +60,9 @@ class Transformations:
             return transforms.Compose([
                 transforms.Resize((self.height, self.width)),
                 transforms.RandomHorizontalFlip(),
-                transforms.RandomResizedCrop( size=(224, 224), scale=(0.4, 1.0), ratio=(3/4, 4/3)),
+                transforms.RandomResizedCrop(size=(224, 224), scale=(0.4, 1.0), ratio=(3/4, 4/3)),
+                transforms.RandomRotation(degrees=15),
+                transforms.RandomVerticalFlip(),
                 transforms.ToTensor(),
                 transforms.Normalize(self.mean, self.std)
             ])
@@ -106,12 +108,13 @@ def main():
     model.to(device)
 
     loss_fn = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0.9, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=FACTOR, patience=PATIENCE, min_lr=MIN_LR)
-
     precision_metric = MulticlassPrecision(num_classes=NUM_CLASSES, average='macro').to(device)
     recall_metric = MulticlassRecall(num_classes=NUM_CLASSES, average='macro').to(device)
     f1_metric = MulticlassF1Score(num_classes=NUM_CLASSES, average='macro').to(device)
+
+    best_accuracy = 0.0
 
     for epoch in range(EPOCHS):
         current_lr = optimizer.param_groups[0]['lr']
@@ -153,7 +156,7 @@ def main():
         epoch_loss = running_loss/len(train_loader)
         epoch_acc = 100.00* correct / total
 
-        print(f"   - Training Loss: {epoch_loss:.3f}, Training Accuracy: {epoch_acc:.3f}% Training Precision: {epoch_precision:.3f}, Training Recall: {epoch_recall:.3f}, Training F1-Score: {epoch_f1:.3f}\n")
+        print(f"   -  Training Accuracy: {epoch_acc:.3f}%, Training Loss: {epoch_loss:.3f}, Training Precision: {epoch_precision:.3f}, Training Recall: {epoch_recall:.3f}, Training F1-Score: {epoch_f1:.3f}\n")
 
         model.eval()  
         val_loss = 0.0
@@ -185,10 +188,16 @@ def main():
         val_epoch_f1 = f1_metric.compute().item()
         val_epoch_loss = val_loss / len(val_loader)
         val_epoch_acc = 100.0 * val_correct / val_total
-        print(f"   - Validation Loss: {val_epoch_loss:.3f}, Validation Accuracy: {val_epoch_acc:.2f}%, Validation Precision: {val_epoch_precision:.3f}, Validation Recall: {val_epoch_recall:.3f}, Validation F1-Score: {val_epoch_f1:.3f}\n")
+        print(f"   -  Validation Accuracy: {val_epoch_acc:.2f}%, Validation Loss: {val_epoch_loss:.3f}, Validation Precision: {val_epoch_precision:.3f}, Validation Recall: {val_epoch_recall:.3f}, Validation F1-Score: {val_epoch_f1:.3f}\n")
     
         scheduler.step(val_epoch_loss)
-    
+
+        if val_epoch_acc > best_accuracy:
+            best_accuracy = val_epoch_acc
+            torch.save(model.state_dict(), 'best_model.pth')
+            print(f"Model saved with accuracy: {val_epoch_acc:.2f}%\n")
+
+    model.load_state_dict(torch.load('best_model.pth'))
     model.eval()
     test_loss = 0.0
     test_correct = 0
@@ -219,7 +228,7 @@ def main():
     test_epoch_f1 = f1_metric.compute().item()
     test_epoch_loss = val_loss / len(val_loader)
     test_epoch_acc = 100.0 * val_correct / val_total
-    print(f"   - Test Loss: {test_epoch_loss:.3f}, Test Accuracy: {test_epoch_acc:.2f}%, Test Precision: {test_epoch_precision:.3f}, Test Recall: {test_epoch_recall:.3f}, Test F1-Score: {test_epoch_f1:.3f}\n")
+    print(f"   - Test Accuracy: {test_epoch_acc:.2f}%, Test Loss: {test_epoch_loss:.3f}, Test Precision: {test_epoch_precision:.3f}, Test Recall: {test_epoch_recall:.3f}, Test F1-Score: {test_epoch_f1:.3f}\n")
 
 "Run Main Function"
 if __name__ == '__main__':
