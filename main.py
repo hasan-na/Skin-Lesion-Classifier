@@ -32,14 +32,39 @@ SMOTE_BATCH_SIZE = 200
 HEIGHT = 224
 WIDTH = 224
 EPOCHS = 50
-LEARNING_RATE = 0.01
+LEARNING_RATE = 0.001
 NUM_CLASSES = 7
 FACTOR = 0.5
 PATIENCE = 3
 MIN_LR = 0.001
 WEIGHT_DECAY = 0.0001
 
+"Dataset for SMOTE Data"
+'''
+class CustomDatasetSMOTE(Dataset):
+    def __init__(self, images, labels, transform=None):
+        self.images = images
+        self.labels = labels
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        image = self.images[idx]
+        label = self.labels[idx]
+
+        if self.transform:
+            image = image.permute(1, 2, 0).cpu().numpy()
+            image = Image.fromarray((image * 255).astype(np.uint8))
+            image = self.transform(image)
+
+        return image, label
+'''
+
 "Use Smote to Balance Dataset"
+'''
+
 def apply_smote(dataset):
     train_data = []
     train_labels = []
@@ -98,16 +123,15 @@ def apply_smote(dataset):
         raise ValueError("No data after SMOTE resampling.")
     
     return smote_data, smote_labels
+'''
 
 "Define Dataset Class"
-
 class CustomDataset(Dataset):
-    def __init__(self, csv_path, img_dir, transform=None, train=None):
+    def __init__(self, csv_path, img_dir, transform=None):
         self.data = pd.read_csv(csv_path)
         self.img_dir = img_dir
         self.transform = transform
         self.labels = self.data.iloc[:, 1:].values
-        self.train = train
 
     def __len__(self):
         return len(self.data)
@@ -116,37 +140,13 @@ class CustomDataset(Dataset):
         img_name = os.path.join(self.img_dir, self.data.iloc[idx, 0] + '.jpg')
         image = Image.open(img_name)
         label = torch.tensor(self.labels[idx], dtype=torch.float32)
-        
-
-        if self.transform:
-            image = self.transform(image)
-        if self.train:
-            return image, label
-        
         class_label = torch.argmax(label)
     
+        if self.transform:
+            image = self.transform(image)
+        
         return image, class_label
     
-"Dataset for SMOTE Data"
-class CustomDatasetSMOTE(Dataset):
-    def __init__(self, images, labels, transform=None):
-        self.images = images
-        self.labels = labels
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.images)
-
-    def __getitem__(self, idx):
-        image = self.images[idx]
-        label = self.labels[idx]
-
-        if self.transform:
-            image = image.permute(1, 2, 0).cpu().numpy()
-            image = Image.fromarray((image * 255).astype(np.uint8))
-            image = self.transform(image)
-
-        return image, label
 
 "Define Transformations"
 class Transformations:
@@ -219,33 +219,33 @@ def main():
     test_transform = Transformations(HEIGHT, WIDTH, MEAN, STD, train=False)
     val_transform = Transformations(HEIGHT, WIDTH, MEAN, STD, train=False)
 
-    train_dataset = CustomDataset(train_csv, train_img_dir, transform=train_transform, train=True)
-    test_dataset = CustomDataset(test_csv, test_img_dir, transform=test_transform, train = False)
-    val_dataset = CustomDataset(val_csv, val_img_dir, transform=val_transform, train=False)
+    train_dataset = CustomDataset(train_csv, train_img_dir, transform=train_transform)
+    test_dataset = CustomDataset(test_csv, test_img_dir, transform=test_transform)
+    val_dataset = CustomDataset(val_csv, val_img_dir, transform=val_transform)
 
-    smote_data, smote_labels = apply_smote(train_dataset)
+    #smote_data, smote_labels = apply_smote(train_dataset)
 
-    smote_images = torch.tensor(smote_data, dtype=torch.float32).view(-1, 3, HEIGHT, WIDTH)
-    smote_labels = torch.tensor(smote_labels, dtype=torch.long)
+    #smote_images = torch.tensor(smote_data, dtype=torch.float32).view(-1, 3, HEIGHT, WIDTH)
+    #smote_labels = torch.tensor(smote_labels, dtype=torch.long)
 
-    balanced_train_dataset = CustomDatasetSMOTE(smote_images, smote_labels, transform=train_transform)
+    #balanced_train_dataset = CustomDatasetSMOTE(smote_images, smote_labels, transform=train_transform)
 
-    train_loader = DataLoader(balanced_train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
     for images, labels in train_loader:
         print("Batch labels:", labels)
         break 
-
+    
     model = CustomEfficientNet(NUM_CLASSES)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     
     optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0.9, weight_decay=WEIGHT_DECAY)
-    #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=FACTOR, patience=PATIENCE, min_lr=MIN_LR)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=LEARNING_RATE, epochs=EPOCHS, steps_per_epoch=len(train_loader), pct_start=0.3)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=FACTOR, patience=PATIENCE, min_lr=MIN_LR)
+    #scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=LEARNING_RATE, epochs=EPOCHS, steps_per_epoch=len(train_loader), pct_start=0.3)
 
     precision_metric = MulticlassPrecision(num_classes=NUM_CLASSES, average=None).to(device)
     recall_metric = MulticlassRecall(num_classes=NUM_CLASSES, average=None).to(device)
@@ -255,9 +255,9 @@ def main():
     best_accuracy = 0.0
 
     for epoch in range(EPOCHS):
-        #current_lr = optimizer.param_groups[0]['lr']
+        current_lr = optimizer.param_groups[0]['lr']
         print(f"Epoch {epoch+1}/{EPOCHS}")
-        #print(f"Learning Rate: {current_lr}")
+        print(f"Learning Rate: {current_lr}")
   
         precision_metric.reset()
         recall_metric.reset()
