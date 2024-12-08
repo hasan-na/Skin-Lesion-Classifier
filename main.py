@@ -31,6 +31,7 @@ class CustomDataset(Dataset):
         self.data = pd.read_csv(csv_path)
         self.img_dir = img_dir
         self.transform = transform
+        self.labels = self.data.iloc[:, 1:].values
 
     def __len__(self):
         return len(self.data)
@@ -38,12 +39,13 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         img_name = os.path.join(self.img_dir, self.data.iloc[idx, 0] + '.jpg')
         image = Image.open(img_name)
-        label = torch.tensor(int(self.data.iloc[idx, 1]))
+        label = torch.tensor(self.labels[idx], dtype=torch.float32)
+        class_label = torch.argmax(label)
 
         if self.transform:
             image = self.transform(image)
 
-        return image, label
+        return image, class_label
 
 "Define Transformations"
 class Transformations:
@@ -110,9 +112,9 @@ def main():
     loss_fn = nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0.9, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=FACTOR, patience=PATIENCE, min_lr=MIN_LR)
-    precision_metric = MulticlassPrecision(num_classes=NUM_CLASSES, average='macro').to(device)
-    recall_metric = MulticlassRecall(num_classes=NUM_CLASSES, average='macro').to(device)
-    f1_metric = MulticlassF1Score(num_classes=NUM_CLASSES, average='macro').to(device)
+    precision_metric = MulticlassPrecision(num_classes=NUM_CLASSES, average=None).to(device)
+    recall_metric = MulticlassRecall(num_classes=NUM_CLASSES, average=None).to(device)
+    f1_metric = MulticlassF1Score(num_classes=NUM_CLASSES, average=None).to(device)
 
     best_accuracy = 0.0
 
@@ -149,14 +151,16 @@ def main():
             f1_metric.update(predicted, labels)
 
    
-        epoch_precision = precision_metric.compute().item()
-        epoch_recall = recall_metric.compute().item()
-        epoch_f1 = f1_metric.compute().item()
+        epoch_precision_per_class = precision_metric.compute().cpu().numpy()
+        epoch_recall_per_class = recall_metric.compute().cpu().numpy()
+        epoch_f1_per_class = f1_metric.compute().cpu().numpy()
 
         epoch_loss = running_loss/len(train_loader)
         epoch_acc = 100.00* correct / total
 
-        print(f"   -  Training Accuracy: {epoch_acc:.3f}%, Training Loss: {epoch_loss:.3f}, Training Precision: {epoch_precision:.3f}, Training Recall: {epoch_recall:.3f}, Training F1-Score: {epoch_f1:.3f}\n")
+        print(f"   -  Training Accuracy: {epoch_acc:.3f}%, Training Loss: {epoch_loss:.3f}")
+        for idx, (precision, recall, f1) in enumerate(zip(epoch_precision_per_class, epoch_recall_per_class, epoch_f1_per_class)):
+            print(f"      Class {idx}: Precision: {precision:.3f}, Recall: {recall:.3f}, F1-Score: {f1:.3f}")
 
         model.eval()  
         val_loss = 0.0
@@ -183,12 +187,15 @@ def main():
                 recall_metric.update(predicted, labels)
                 f1_metric.update(predicted, labels)
 
-        val_epoch_precision = precision_metric.compute().item()
-        val_epoch_recall = recall_metric.compute().item()
-        val_epoch_f1 = f1_metric.compute().item()
+        val_precision_per_class = precision_metric.compute().cpu().numpy()
+        val_recall_per_class = recall_metric.compute().cpu().numpy()
+        val_f1_per_class = f1_metric.compute().cpu().numpy()
         val_epoch_loss = val_loss / len(val_loader)
         val_epoch_acc = 100.0 * val_correct / val_total
-        print(f"   -  Validation Accuracy: {val_epoch_acc:.2f}%, Validation Loss: {val_epoch_loss:.3f}, Validation Precision: {val_epoch_precision:.3f}, Validation Recall: {val_epoch_recall:.3f}, Validation F1-Score: {val_epoch_f1:.3f}\n")
+
+        print(f"   -  Validation Accuracy: {val_epoch_acc:.3f}%, Validation Loss: {val_epoch_loss:.3f}")
+        for idx, (precision, recall, f1) in enumerate(zip(val_precision_per_class, val_recall_per_class, val_f1_per_class)):
+            print(f"      Class {idx}: Precision: {precision:.3f}, Recall: {recall:.3f}, F1-Score: {f1:.3f}")
     
         scheduler.step(val_epoch_loss)
 
@@ -223,12 +230,15 @@ def main():
             recall_metric.update(predicted, labels)
             f1_metric.update(predicted, labels)
     
-    test_epoch_precision = precision_metric.compute().item()
-    test_epoch_recall = recall_metric.compute().item()
-    test_epoch_f1 = f1_metric.compute().item()
-    test_epoch_loss = val_loss / len(val_loader)
-    test_epoch_acc = 100.0 * val_correct / val_total
-    print(f"   - Test Accuracy: {test_epoch_acc:.2f}%, Test Loss: {test_epoch_loss:.3f}, Test Precision: {test_epoch_precision:.3f}, Test Recall: {test_epoch_recall:.3f}, Test F1-Score: {test_epoch_f1:.3f}\n")
+    test_precision_per_class = precision_metric.compute().cpu().numpy()
+    test_recall_per_class = recall_metric.compute().cpu().numpy()
+    test_f1_per_class = f1_metric.compute().cpu().numpy()
+    test_epoch_loss = test_loss / len(test_loader)
+    test_epoch_acc = 100.0 * test_correct / test_total
+
+    print(f"   -  Test Accuracy: {test_epoch_acc:.3f}%, Test Loss: {test_epoch_loss:.3f}")
+    for idx, (precision, recall, f1) in enumerate(zip(test_precision_per_class, test_recall_per_class, test_f1_per_class)):
+            print(f"      Class {idx}: Precision: {precision:.3f}, Recall: {recall:.3f}, F1-Score: {f1:.3f}")
 
 "Run Main Function"
 if __name__ == '__main__':
