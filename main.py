@@ -9,7 +9,7 @@ import torchvision.transforms as transforms #type: ignore
 from PIL import Image #type: ignore
 from torchmetrics.classification import MulticlassPrecision, MulticlassRecall, MulticlassF1Score #type: ignore
 from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights # type: ignore
-
+from kornia.losses import focal_loss #type: ignore
 "Declare Constants"
 MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
@@ -17,12 +17,12 @@ BATCH_SIZE = 32
 HEIGHT = 224
 WIDTH = 224
 EPOCHS = 30
-LEARNING_RATE = 0.01
+LEARNING_RATE = 0.002  #0.003 before (best output so far)
 NUM_CLASSES = 7
 FACTOR = 0.5
-PATIENCE = 3
+PATIENCE = 2           # 3 before
 MIN_LR = 0.001
-WEIGHT_DECAY = 0.00008
+WEIGHT_DECAY = 0.01
 
 "Define Dataset Class"
 
@@ -78,6 +78,20 @@ class Transformations:
     def __call__(self, img):
         return self.transform(img)
     
+"Custom Efficient Net Model"
+class CustomEfficientNet(nn.Module):
+    def __init__(self, num_classes):
+        super(CustomEfficientNet, self).__init__()
+        self.model = efficientnet_b0(weights=EfficientNet_B0_Weights.DEFAULT)
+
+        self.model.classifier = nn.Sequential(
+            nn.Dropout(p=0.4),
+            nn.Linear(self.model.classifier[1].in_features, num_classes)
+        )
+
+    def forward(self, x):
+        return self.model(x)
+      
 "Main Function"
 def main():
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -101,17 +115,14 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-    model = efficientnet_b0(weights=EfficientNet_B0_Weights.DEFAULT)
-    model.classifier = nn.Sequential(
-    nn.Linear(model.classifier[1].in_features, NUM_CLASSES),
-  )
+    model = CustomEfficientNet(num_classes=NUM_CLASSES)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
     loss_fn = nn.CrossEntropyLoss()
-    optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0.9, weight_decay=WEIGHT_DECAY)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=FACTOR, patience=PATIENCE, min_lr=MIN_LR)
+    optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0.85, weight_decay=WEIGHT_DECAY)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=FACTOR, patience=PATIENCE)
     precision_metric = MulticlassPrecision(num_classes=NUM_CLASSES, average=None).to(device)
     recall_metric = MulticlassRecall(num_classes=NUM_CLASSES, average=None).to(device)
     f1_metric = MulticlassF1Score(num_classes=NUM_CLASSES, average=None).to(device)
