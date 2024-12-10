@@ -8,21 +8,22 @@ import pandas as pd #type: ignore
 import torchvision.transforms as transforms #type: ignore
 from PIL import Image #type: ignore
 from torchmetrics.classification import MulticlassPrecision, MulticlassRecall, MulticlassF1Score #type: ignore
-from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights # type: ignore
-from kornia.losses import focal_loss #type: ignore
+from torchvision.models import efficientnet_b4, EfficientNet_B4_Weights # type: ignore
+from torchvision.models import resnet50, ResNet50_Weights # type: ignore
+from torchvision.models import densenet169, DenseNet169_Weights # type: ignore
 "Declare Constants"
 MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
 BATCH_SIZE = 32
 HEIGHT = 224
 WIDTH = 224
-EPOCHS = 30
-LEARNING_RATE = 0.002  #0.003 before (best output so far)
+EPOCHS = 35
+LEARNING_RATE = 0.003  
 NUM_CLASSES = 7
 FACTOR = 0.5
-PATIENCE = 2           # 3 before
-MIN_LR = 0.001
-WEIGHT_DECAY = 0.01
+PATIENCE = 2           
+MIN_LR = 0.000125
+WEIGHT_DECAY = 0.01    
 
 "Define Dataset Class"
 
@@ -62,7 +63,7 @@ class Transformations:
             return transforms.Compose([
                 transforms.Resize((self.height, self.width)),
                 transforms.RandomHorizontalFlip(),
-                transforms.RandomResizedCrop(size=(224, 224), scale=(0.4, 1.0), ratio=(3/4, 4/3)),
+                transforms.RandomResizedCrop(size=(224, 224), scale=(0.2, 1.0), ratio=(3/4, 4/3)),
                 transforms.RandomRotation(degrees=15),
                 transforms.RandomVerticalFlip(),
                 transforms.ToTensor(),
@@ -79,15 +80,30 @@ class Transformations:
         return self.transform(img)
     
 "Custom Efficient Net Model"
-class CustomEfficientNet(nn.Module):
+class CustomDenseNet(nn.Module):
     def __init__(self, num_classes):
-        super(CustomEfficientNet, self).__init__()
-        self.model = efficientnet_b0(weights=EfficientNet_B0_Weights.DEFAULT)
+        super(CustomDenseNet, self).__init__()
+        self.model = densenet169(weights=DenseNet169_Weights.DEFAULT)
 
+        num_features = self.model.classifier.in_features
         self.model.classifier = nn.Sequential(
-            nn.Dropout(p=0.4),
-            nn.Linear(self.model.classifier[1].in_features, num_classes)
+            nn.Dropout(p=0.45), 
+            nn.Linear(num_features, num_classes)
         )
+    
+    def freeze_layers(self):
+
+        blocks_to_freeze = [
+            'conv0', 'norm0', 'pool0',  
+            'denseblock1', 'transition1',
+            'denseblock2', 'transition2'
+        ]
+        
+        for name, param in self.model.features.named_parameters():
+            if any(block in name for block in blocks_to_freeze):
+                param.requires_grad = False
+            else:
+                param.requires_grad = True  
 
     def forward(self, x):
         return self.model(x)
@@ -115,14 +131,17 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-    model = CustomEfficientNet(num_classes=NUM_CLASSES)
+    model = CustomDenseNet(num_classes=NUM_CLASSES)
+    model.freeze_layers()
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    loss_fn = nn.CrossEntropyLoss()
-    optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0.85, weight_decay=WEIGHT_DECAY)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=FACTOR, patience=PATIENCE)
+    loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
+    optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=LEARNING_RATE, momentum=0.85, weight_decay=WEIGHT_DECAY)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=FACTOR, patience=PATIENCE, min_lr=MIN_LR)
+    #scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=MIN_LR)
+
     precision_metric = MulticlassPrecision(num_classes=NUM_CLASSES, average=None).to(device)
     recall_metric = MulticlassRecall(num_classes=NUM_CLASSES, average=None).to(device)
     f1_metric = MulticlassF1Score(num_classes=NUM_CLASSES, average=None).to(device)
@@ -161,6 +180,7 @@ def main():
             recall_metric.update(predicted, labels)
             f1_metric.update(predicted, labels)
 
+        #scheduler.step()
    
         epoch_precision_per_class = precision_metric.compute().cpu().numpy()
         epoch_recall_per_class = recall_metric.compute().cpu().numpy()
@@ -212,10 +232,10 @@ def main():
 
         if val_epoch_acc > best_accuracy:
             best_accuracy = val_epoch_acc
-            torch.save(model.state_dict(), 'best_model.pth')
+            torch.save(model.state_dict(), 'best_model_DenseNet2.pth')
             print(f"Model saved with accuracy: {val_epoch_acc:.2f}%\n")
 
-    model.load_state_dict(torch.load('best_model.pth'))
+    model.load_state_dict(torch.load('best_model_DenseNet2.pth'))
     model.eval()
     test_loss = 0.0
     test_correct = 0
