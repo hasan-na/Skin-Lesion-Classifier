@@ -17,13 +17,13 @@ STD = [0.229, 0.224, 0.225]
 BATCH_SIZE = 32
 HEIGHT = 224
 WIDTH = 224
-EPOCHS = 35
+EPOCHS = 30
 LEARNING_RATE = 0.003  
 NUM_CLASSES = 7
 FACTOR = 0.5
 PATIENCE = 2           
 MIN_LR = 0.000125
-WEIGHT_DECAY = 0.01    
+WEIGHT_DECAY = 0.0015
 
 "Define Dataset Class"
 
@@ -62,10 +62,12 @@ class Transformations:
         if self.train:
             return transforms.Compose([
                 transforms.Resize((self.height, self.width)),
-                transforms.RandomHorizontalFlip(),
+                transforms.RandomHorizontalFlip(p=0.5),
                 transforms.RandomResizedCrop(size=(224, 224), scale=(0.2, 1.0), ratio=(3/4, 4/3)),
                 transforms.RandomRotation(degrees=15),
-                transforms.RandomVerticalFlip(),
+                transforms.RandomVerticalFlip(p=0.5),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
+                transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1), shear=0.1),
                 transforms.ToTensor(),
                 transforms.Normalize(self.mean, self.std)
             ])
@@ -87,7 +89,7 @@ class CustomDenseNet(nn.Module):
 
         num_features = self.model.classifier.in_features
         self.model.classifier = nn.Sequential(
-            nn.Dropout(p=0.45), 
+            nn.Dropout(p=0.4),
             nn.Linear(num_features, num_classes)
         )
     
@@ -137,10 +139,9 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
+    loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1) 
     optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=LEARNING_RATE, momentum=0.85, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=FACTOR, patience=PATIENCE, min_lr=MIN_LR)
-    #scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=MIN_LR)
 
     precision_metric = MulticlassPrecision(num_classes=NUM_CLASSES, average=None).to(device)
     recall_metric = MulticlassRecall(num_classes=NUM_CLASSES, average=None).to(device)
@@ -232,10 +233,10 @@ def main():
 
         if val_epoch_acc > best_accuracy:
             best_accuracy = val_epoch_acc
-            torch.save(model.state_dict(), 'best_model_DenseNet2.pth')
+            torch.save(model.state_dict(), 'best_model_DenseNet3.pth')
             print(f"Model saved with accuracy: {val_epoch_acc:.2f}%\n")
 
-    model.load_state_dict(torch.load('best_model_DenseNet2.pth'))
+    model.load_state_dict(torch.load('best_model_DenseNet3.pth'))
     model.eval()
     test_loss = 0.0
     test_correct = 0
