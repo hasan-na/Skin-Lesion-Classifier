@@ -8,9 +8,10 @@ import pandas as pd #type: ignore
 import torchvision.transforms as transforms #type: ignore
 from PIL import Image #type: ignore
 from torchmetrics.classification import MulticlassPrecision, MulticlassRecall, MulticlassF1Score #type: ignore
-from torchvision.models import efficientnet_b4, EfficientNet_B4_Weights # type: ignore
-from torchvision.models import resnet50, ResNet50_Weights # type: ignore
+from torchvision.models import mobilenet_v3_large, MobileNet_V3_Large_Weights # type: ignore
 from torchvision.models import densenet169, DenseNet169_Weights # type: ignore
+from sklearn.metrics import f1_score, roc_curve, auc # type: ignore
+import matplotlib.pyplot as plt # type: ignore
 "Declare Constants"
 MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
@@ -81,33 +82,25 @@ class Transformations:
     def __call__(self, img):
         return self.transform(img)
     
-"Custom Efficient Net Model"
-class CustomDenseNet(nn.Module):
+"Custom Mobile Net Model"
+class CustomMobileNet(nn.Module):
     def __init__(self, num_classes):
-        super(CustomDenseNet, self).__init__()
-        self.model = densenet169(weights=DenseNet169_Weights.DEFAULT)
-
-        num_features = self.model.classifier.in_features
-        self.model.classifier = nn.Sequential(
-            nn.Dropout(p=0.4),
-            nn.Linear(num_features, num_classes)
-        )
-    
-    def freeze_layers(self):
-
-        blocks_to_freeze = [
-            'conv0', 'norm0', 'pool0',  
-            'denseblock1', 'transition1',
-            'denseblock2', 'transition2'
-        ]
+        super(CustomMobileNet, self).__init__()
+        self.model = mobilenet_v3_large(weights=MobileNet_V3_Large_Weights.DEFAULT)
         
-        for name, param in self.model.features.named_parameters():
-            if any(block in name for block in blocks_to_freeze):
-                param.requires_grad = False
-            else:
-                param.requires_grad = True  
+        # Get the input features from the last conv layer
+        last_channel = self.model.classifier[0].in_features
+        
+        # Replace classifier
+        self.model.classifier = nn.Sequential(
+            nn.Linear(last_channel, 1280),
+            nn.Hardswish(),
+            nn.Dropout(p=0.2),
+            nn.Linear(1280, num_classes)
+        )
 
     def forward(self, x):
+        # Forward pass through the entire model
         return self.model(x)
       
 "Main Function"
@@ -133,8 +126,7 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-    model = CustomDenseNet(num_classes=NUM_CLASSES)
-    model.freeze_layers()
+    model = CustomMobileNet(num_classes=NUM_CLASSES)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -143,11 +135,15 @@ def main():
     optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=LEARNING_RATE, momentum=0.85, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=FACTOR, patience=PATIENCE, min_lr=MIN_LR)
 
-    precision_metric = MulticlassPrecision(num_classes=NUM_CLASSES, average=None).to(device)
-    recall_metric = MulticlassRecall(num_classes=NUM_CLASSES, average=None).to(device)
-    f1_metric = MulticlassF1Score(num_classes=NUM_CLASSES, average=None).to(device)
+    precision_metric = MulticlassPrecision(num_classes=NUM_CLASSES, average='macro').to(device)
+    recall_metric = MulticlassRecall(num_classes=NUM_CLASSES, average='macro').to(device)
+    f1_metric = MulticlassF1Score(num_classes=NUM_CLASSES, average='macro').to(device)
 
     best_accuracy = 0.0
+    train_accuracies = []
+    val_accuracies = []
+    train_losses = []
+    val_losses = []
 
     for epoch in range(EPOCHS):
         current_lr = optimizer.param_groups[0]['lr']
@@ -183,16 +179,14 @@ def main():
 
         #scheduler.step()
    
-        epoch_precision_per_class = precision_metric.compute().cpu().numpy()
-        epoch_recall_per_class = recall_metric.compute().cpu().numpy()
-        epoch_f1_per_class = f1_metric.compute().cpu().numpy()
+        epoch_precision = precision_metric.compute().cpu().numpy()
+        epoch_recall = recall_metric.compute().cpu().numpy()
+        epoch_f1 = f1_metric.compute().cpu().numpy()
 
         epoch_loss = running_loss/len(train_loader)
         epoch_acc = 100.00* correct / total
 
-        print(f"   -  Training Accuracy: {epoch_acc:.3f}%, Training Loss: {epoch_loss:.3f}")
-        for idx, (precision, recall, f1) in enumerate(zip(epoch_precision_per_class, epoch_recall_per_class, epoch_f1_per_class)):
-            print(f"      Class {idx}: Precision: {precision:.3f}, Recall: {recall:.3f}, F1-Score: {f1:.3f}")
+        print(f"   - Training Loss: {epoch_loss:.3f}, Training Accuracy: {epoch_acc:.2f}%, Precision: {epoch_precision:.3f}, Recall: {epoch_recall:.3f}, F1-Score: {epoch_f1:.3f}\n")
 
         model.eval()  
         val_loss = 0.0
@@ -219,24 +213,26 @@ def main():
                 recall_metric.update(predicted, labels)
                 f1_metric.update(predicted, labels)
 
-        val_precision_per_class = precision_metric.compute().cpu().numpy()
-        val_recall_per_class = recall_metric.compute().cpu().numpy()
-        val_f1_per_class = f1_metric.compute().cpu().numpy()
+        val_epoch_precision = precision_metric.compute().cpu().numpy()
+        val_epoch_recall = recall_metric.compute().cpu().numpy()
+        val_epoch_f1 = f1_metric.compute().cpu().numpy()
         val_epoch_loss = val_loss / len(val_loader)
         val_epoch_acc = 100.0 * val_correct / val_total
 
-        print(f"   -  Validation Accuracy: {val_epoch_acc:.3f}%, Validation Loss: {val_epoch_loss:.3f}")
-        for idx, (precision, recall, f1) in enumerate(zip(val_precision_per_class, val_recall_per_class, val_f1_per_class)):
-            print(f"      Class {idx}: Precision: {precision:.3f}, Recall: {recall:.3f}, F1-Score: {f1:.3f}")
-    
+        print(f"   - Validation Loss: {val_epoch_loss:.3f}, Validation Accuracy: {val_epoch_acc:.2f}%, Precision: {val_epoch_precision:.3f}, Recall: {val_epoch_recall:.3f}, F1-Score: {val_epoch_f1:.3f}\n")
         scheduler.step(val_epoch_loss)
+
+        train_accuracies.append(epoch_acc)
+        val_accuracies.append(val_epoch_acc)
+        train_losses.append(epoch_loss)
+        val_losses.append(val_epoch_loss)
 
         if val_epoch_acc > best_accuracy:
             best_accuracy = val_epoch_acc
-            torch.save(model.state_dict(), 'best_model_DenseNet3.pth')
+            torch.save(model.state_dict(), 'best_model_MobileNet.pth')
             print(f"Model saved with accuracy: {val_epoch_acc:.2f}%\n")
 
-    model.load_state_dict(torch.load('best_model_DenseNet3.pth'))
+    model.load_state_dict(torch.load('best_model_MobileNet.pth'))
     model.eval()
     test_loss = 0.0
     test_correct = 0
@@ -244,6 +240,8 @@ def main():
     precision_metric.reset()
     recall_metric.reset()
     f1_metric.reset()
+    test_true = []
+    test_pred_probs = []
 
     with torch.no_grad():
         for images, labels in test_loader:
@@ -253,6 +251,7 @@ def main():
 
             outputs = model(images)
             _, predicted = torch.max(outputs.data, 1)
+            probs = torch.softmax(outputs, dim=1)
             loss = loss_fn(outputs, labels)
 
             test_loss += loss.item()
@@ -261,16 +260,18 @@ def main():
             precision_metric.update(predicted, labels)
             recall_metric.update(predicted, labels)
             f1_metric.update(predicted, labels)
+
+            test_true.extend(labels.cpu().numpy())
+            test_pred_probs.extend(probs.cpu().numpy())  # Store probabilities instead of predictions
     
-    test_precision_per_class = precision_metric.compute().cpu().numpy()
-    test_recall_per_class = recall_metric.compute().cpu().numpy()
-    test_f1_per_class = f1_metric.compute().cpu().numpy()
+    test_epoch_precision = precision_metric.compute().cpu().numpy()
+    test_epoch_recall = recall_metric.compute().cpu().numpy()
+    test_epoch_f1 = f1_metric.compute().cpu().numpy()
     test_epoch_loss = test_loss / len(test_loader)
     test_epoch_acc = 100.0 * test_correct / test_total
 
-    print(f"   -  Test Accuracy: {test_epoch_acc:.3f}%, Test Loss: {test_epoch_loss:.3f}")
-    for idx, (precision, recall, f1) in enumerate(zip(test_precision_per_class, test_recall_per_class, test_f1_per_class)):
-            print(f"      Class {idx}: Precision: {precision:.3f}, Recall: {recall:.3f}, F1-Score: {f1:.3f}")
+    print(f"   - Test Loss: {test_epoch_loss:.3f}, Test Accuracy: {test_epoch_acc:.2f}%, Precision: {test_epoch_precision:.3f}, Recall: {test_epoch_recall:.3f}, F1-Score: {test_epoch_f1:.3f}\n")
+
 
 "Run Main Function"
 if __name__ == '__main__':
